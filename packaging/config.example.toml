@@ -1,0 +1,45 @@
+# derp-guard config file example
+# Deployed path: /etc/derper/config.toml (permissions should be 0600)
+
+[derper]
+bin_path    = "/usr/libexec/derper"
+hostname    = "derp.example.com"
+listen_addr = ":443"
+http_port   = -1      # -1 disables port 80; set to 80 for derper_letsencrypt mode
+stun_port   = 3478
+home        = "blank" # passed to derper --home: "blank" hides the default DERP fingerprint page; can also be a redirect URL or "" (empty = flag not passed)
+cert_dir    = "/var/lib/derper/certs"
+ipv4        = ""      # optional: explicit IPv4 emitted by the derp-guard derpmap subcommand
+extra_flags = []      # optional: extra command-line flags passed through to derper
+
+# Certificate / run mode (choose exactly one):
+# 1. "reverse_proxy"        - plain local HTTP (for a Caddy/Nginx reverse proxy in front; set listen_addr to e.g. "127.0.0.1:3340")
+# 2. "derper_selfsigned"    - let derper auto-generate a self-signed IP cert (hostname must be a public IP)
+# 3. "custom_selfsigned"    - a single self-signed cert you manage yourself (set cert_file / key_file; cert changes auto-restart derper)
+# 4. "derper_letsencrypt"   - let derper's built-in ACME handle everything (needs a public domain and ports 80/443)
+# 5. "external_letsencrypt" - external certbot/acme.sh managed certs (set cert_file / key_file; cert changes auto-restart derper)
+cert_mode               = "reverse_proxy"
+cert_file               = ""
+key_file                = ""
+cert_check_interval_sec = 60
+
+[guard]
+poll_interval_sec  = 300
+miss_cooldown_sec  = 60
+revoke_on_auth_err = true
+status_listen      = "127.0.0.1:8001"
+cache_file         = "/var/lib/derper/nodes_cache.json"
+
+[guard.static_nodes]
+# Emergency static allowlist: "nodekey:64-hex-chars" = "device note"
+# "nodekey:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" = "emergency-laptop"
+
+[[guard.friends]]
+name          = "Me"
+client_id     = "k111111CNTRL"
+client_secret = "tskey-client-k111111CNTRL-xxxxxx"
+
+[[guard.friends]]
+name          = "Alice"
+client_id     = "k222222CNTRL"
+client_secret = "tskey-client-k222222CNTRL-yyyyyy"

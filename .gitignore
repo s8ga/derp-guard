@@ -1,0 +1,11 @@
+# Build artifacts
+/build/
+/dist/
+/tmp_bin/
+/derp-guard
+/derp-guard.exe
+*.deb
+
+# Local smoke-test scratch
+/.smoke/
+*.tmp
