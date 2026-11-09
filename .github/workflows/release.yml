@@ -65,10 +65,7 @@ jobs:
 
       - name: Install packaging tools
         if: steps.check.outputs.skip != '1'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dpkg-dev apt-utils
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
       - name: Build and package (amd64 / arm64)
         if: steps.check.outputs.skip != '1'
@@ -100,52 +97,6 @@ jobs:
             --title "v${DEB_VERSION} (Tailscale ${TS_TAG})" \
             --generate-notes
 
-      - name: Generate APT index with adaptive GPG signing
-        if: steps.check.outputs.skip != '1'
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          cd dist
-          dpkg-scanpackages --multiversion . > Packages
-          gzip -k -f Packages
-          apt-ftparchive \
-            -o APT::FTPArchive::Release::Origin="tailscale-derper-oauth" \
-            -o APT::FTPArchive::Release::Label="tailscale-derper-oauth" \
-            -o APT::FTPArchive::Release::Suite="stable" \
-            -o APT::FTPArchive::Release::Codename="stable" \
-            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
-            release . > Release
-
-          if [ -n "$GPG_PRIVATE_KEY" ]; then
-            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-            gpg --export -a > pubkey.gpg
-            GPG_OPTS="--batch --yes"
-            if [ -n "$GPG_PASSPHRASE" ]; then
-              printf '%s' "$GPG_PASSPHRASE" > /tmp/.gpg-pass
-              GPG_OPTS="${GPG_OPTS} --pinentry-mode loopback --passphrase-file /tmp/.gpg-pass"
-            fi
-            gpg ${GPG_OPTS} --clearsign -o InRelease Release
-            gpg ${GPG_OPTS} --detach-sign --armor -o Release.gpg Release
-            rm -f /tmp/.gpg-pass
-            echo "APT index signed with GPG (pubkey.gpg published alongside)"
-          else
-            echo "GPG_PRIVATE_KEY not configured, skipping signing (clients should use [trusted=yes])"
-          fi
-
-      # No upload-artifact on purpose: it would eat the account storage quota.
-      # The dist/ directory is published as a single-commit orphan gh-pages branch instead.
-      - name: Publish static APT repo to gh-pages (single-commit orphan branch)
-        if: steps.check.outputs.skip != '1'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          cd dist
-          touch .nojekyll
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b gh-pages
-          git add -A
-          git commit -q -m "APT repository update: ${DEB_VERSION}"
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+      # No APT indexing here: the shared package pool (s8ga/repo gh-pages) is
+      # maintained by its scheduled collector, which picks up new releases
+      # automatically. No upload-artifact either — it would eat storage quota.

@@ -28,15 +28,15 @@ Operational behavior:
 
 ## Install
 
-Flat APT repo on gh-pages:
+Shared APT repo (hosted at [s8ga/repo](https://github.com/s8ga/repo); a scheduled collector picks up new releases automatically):
 
 ```bash
-echo "deb [trusted=yes] https://s8ga.github.io/derp-guard/ ./" \
-  | sudo tee /etc/apt/sources.list.d/tailscale-derper-oauth.list
+echo "deb [trusted=yes] https://s8ga.github.io/repo/deb/ ./" \
+  | sudo tee /etc/apt/sources.list.d/s8ga.list
 sudo apt update && sudo apt install tailscale-derper-oauth
 ```
 
-Once the repo has a `GPG_PRIVATE_KEY` secret the index is signed automatically and you can switch to `deb [signed-by=...]`; the pubkey lives at <https://s8ga.github.io/derp-guard/pubkey.gpg>. Alternatively grab the deb directly from [Releases](https://github.com/s8ga/derp-guard/releases).
+Unsigned on purpose: everything is served over authenticated HTTPS from GitHub Pages by the same account that builds the packages, so signatures add no real protection here. Alternatively grab the deb directly from [Releases](https://github.com/s8ga/derp-guard/releases).
 
 What gets installed: `/usr/bin/derp-guard` (this repo), `/usr/libexec/derper` (official binary), `/etc/derper/config.toml` (noreplace, survives upgrades, 0600), and `derper.service`.
 
@@ -132,7 +132,7 @@ Emergency static allowlist (bypasses the API when everything is down):
 
 [deploy/pyinfra](deploy/pyinfra): hosts and variables live in [inventory.py](deploy/pyinfra/inventory.py); `pyinfra inventory.py deploy_derp.py` configures the APT repo, installs/upgrades the package, renders the config, and couples systemd (package update → restart, config-only change → reload, i.e. SIGHUP).
 
-Upstream tracking: a push to main or an `upstream_release` dispatch makes CI build dual-arch debs from the latest stable Tailscale tag and publish them (version = `upstream version - repo commit count`; already-published versions are skipped). [deploy/gcp-watcher](deploy/gcp-watcher) runs on any always-on box, polls the upstream release every 5 minutes using ETag/304 at zero quota cost, and dispatches on new tags (needs a PAT in `/etc/default/watch-tailscale`).
+Upstream tracking: a push to main or an `upstream_release` dispatch makes CI build dual-arch debs from the latest stable Tailscale tag and publish them as a Release (version = `upstream version - repo commit count`; already-published versions are skipped). The shared APT pool at [s8ga/repo](https://github.com/s8ga/repo) collects new releases on a daily schedule. [deploy/gcp-watcher](deploy/gcp-watcher) runs on any always-on box, polls the upstream release every 5 minutes using ETag/304 at zero quota cost, and dispatches on new tags (needs a PAT in `/etc/default/watch-tailscale`).
 
 ## Building
 
