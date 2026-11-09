@@ -1,0 +1,151 @@
+name: release
+
+on:
+  repository_dispatch:
+    types: [upstream_release]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tailscale_tag:
+        description: 'Upstream Tailscale tag (e.g. v1.82.0); leave empty for latest stable'
+        required: false
+        default: ''
+
+# Only one release pipeline at a time, so gh-pages orphan pushes never race.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # rev-list --count HEAD needs full history so DEB_VERSION strictly increases
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Resolve version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TS_TAG="${{ github.event.client_payload.tailscale_tag }}${{ inputs.tailscale_tag }}"
+          if [ -z "$TS_TAG" ]; then
+            TS_TAG="$(gh api repos/tailscale/tailscale/releases/latest --jq .tag_name)"
+          fi
+          TS_VER="${TS_TAG#v}"
+          REV_COUNT="$(git rev-list --count HEAD)"
+          DEB_VERSION="${TS_VER}-${REV_COUNT}"
+          {
+            echo "TS_TAG=${TS_TAG}"
+            echo "TS_VER=${TS_VER}"
+            echo "DEB_VERSION=${DEB_VERSION}"
+            echo "RELEASE_TAG=v${DEB_VERSION}"
+          } >> "$GITHUB_ENV"
+          echo "Target version: ${DEB_VERSION} (Tailscale ${TS_TAG}, rev=${REV_COUNT})"
+
+      - name: Skip if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists, skipping build"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install packaging tools
+        if: steps.check.outputs.skip != '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev apt-utils
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build and package (amd64 / arm64)
+        if: steps.check.outputs.skip != '1'
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: auto # auto-download a newer toolchain if upstream Tailscale requires it
+        run: |
+          mkdir -p build dist
+          for ARCH in amd64 arm64; do
+            echo "==> building ${ARCH}"
+            rm -rf ts-src
+            git clone --depth 1 --branch "${TS_TAG}" https://github.com/tailscale/tailscale.git ts-src
+            (
+              cd ts-src
+              GOARCH=${ARCH} go build -ldflags="-s -w" -o "${GITHUB_WORKSPACE}/build/derper" ./cmd/derper
+            )
+            GOARCH=${ARCH} go build -ldflags="-s -w" -o build/derp-guard .
+            NFPM_ARCH=${ARCH} DEB_VERSION=${DEB_VERSION} nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+            rm -rf ts-src
+          done
+          ls -lh dist/
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${RELEASE_TAG}" dist/*.deb \
+            --title "v${DEB_VERSION} (Tailscale ${TS_TAG})" \
+            --generate-notes
+
+      - name: Generate APT index with adaptive GPG signing
+        if: steps.check.outputs.skip != '1'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          cd dist
+          dpkg-scanpackages --multiversion . > Packages
+          gzip -k -f Packages
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="tailscale-derper-oauth" \
+            -o APT::FTPArchive::Release::Label="tailscale-derper-oauth" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            release . > Release
+
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            gpg --export -a > pubkey.gpg
+            GPG_OPTS="--batch --yes"
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              printf '%s' "$GPG_PASSPHRASE" > /tmp/.gpg-pass
+              GPG_OPTS="${GPG_OPTS} --pinentry-mode loopback --passphrase-file /tmp/.gpg-pass"
+            fi
+            gpg ${GPG_OPTS} --clearsign -o InRelease Release
+            gpg ${GPG_OPTS} --detach-sign --armor -o Release.gpg Release
+            rm -f /tmp/.gpg-pass
+            echo "APT index signed with GPG (pubkey.gpg published alongside)"
+          else
+            echo "GPG_PRIVATE_KEY not configured, skipping signing (clients should use [trusted=yes])"
+          fi
+
+      # No upload-artifact on purpose: it would eat the account storage quota.
+      # The dist/ directory is published as a single-commit orphan gh-pages branch instead.
+      - name: Publish static APT repo to gh-pages (single-commit orphan branch)
+        if: steps.check.outputs.skip != '1'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          touch .nojekyll
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b gh-pages
+          git add -A
+          git commit -q -m "APT repository update: ${DEB_VERSION}"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

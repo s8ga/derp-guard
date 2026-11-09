@@ -1,0 +1,17 @@
+[Unit]
+Description=Tailscale DERP Server with OAuth Admission Guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/derp-guard serve -config /etc/derper/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+StateDirectory=derper
+ConfigurationDirectory=derper
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
