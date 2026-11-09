@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch Tailscale upstream releases and dispatch build
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/watch-tailscale
+ExecStart=/usr/local/sbin/watch-tailscale.sh
+# /etc/default/watch-tailscale contains GH_PAT; permissions are tightened to
+# 0600 root:root by the deploy script.
