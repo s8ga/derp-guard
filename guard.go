@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,15 +73,18 @@ type tokenResp struct {
 
 // Guard maintains the cross-tailnet admission table.
 type Guard struct {
-	mu            sync.RWMutex // protects every field below
-	cfg           GuardConfig  // currently effective [guard] config (hot-reloaded on SIGHUP)
-	client        *http.Client // 8s per-request timeout
-	tokens        map[string]*cachedToken
-	byFriend      map[string]map[string]NodeMeta // friend name -> nodekey -> meta
-	nodes         map[string]NodeMeta            // global read-only table (friends + static allowlist)
-	negCache      map[string]time.Time           // negative cache: nodekey -> deny-until
-	lastForceSync time.Time
-	startedAt     time.Time
+	mu               sync.RWMutex // protects every field below
+	cfg              GuardConfig  // currently effective [guard] config (hot-reloaded on SIGHUP)
+	client           *http.Client // 8s per-request timeout
+	tokens           map[string]*cachedToken
+	byFriend         map[string]map[string]NodeMeta // friend name -> nodekey -> meta
+	synced           map[string]bool                // friend name -> whether synced at least once
+	nodes            map[string]NodeMeta            // global read-only table (friends + static allowlist)
+	negCache         map[string]time.Time           // negative cache: nodekey -> deny-until
+	lastSync         time.Time
+	lastForceSync    time.Time
+	tableInitialized bool
+	startedAt        time.Time
 
 	syncMu sync.Mutex // serializes SyncAll so polling and forced syncs cannot interleave
 }
@@ -91,10 +95,24 @@ func newGuard(cfg GuardConfig) *Guard {
 		client:    &http.Client{Timeout: perFriendTimeout},
 		tokens:    map[string]*cachedToken{},
 		byFriend:  map[string]map[string]NodeMeta{},
+		synced:    map[string]bool{},
 		nodes:     map[string]NodeMeta{},
 		negCache:  map[string]time.Time{},
 		startedAt: time.Now(),
 	}
+}
+
+func nodesEqual(a, b map[string]NodeMeta) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || va != vb {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateConfig hot-swaps the [guard] config (SIGHUP): replaces the friend list,
@@ -117,14 +135,14 @@ func (g *Guard) UpdateConfig(nc GuardConfig) {
 			delete(g.tokens, name)
 		}
 	}
+	for name := range g.synced {
+		if !keep[name] {
+			delete(g.synced, name)
+		}
+	}
+	g.negCache = map[string]time.Time{}
 	g.mu.Unlock()
-	g.rebuildAndPersist()
-}
-
-func (g *Guard) currentPollInterval() int {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.cfg.PollIntervalSec
+	g.rebuildAndPersist(true)
 }
 
 // token fetches (and caches) a friend's API access token.
@@ -227,7 +245,9 @@ func (g *Guard) fetchFriendDevices(ctx context.Context, f Friend) ([]deviceJSON,
 // revocation (with revoke_on_auth_err) clears that friend's nodes; transient
 // errors keep the last successful snapshot so online friends are never locked
 // out by a bad API day.
-func (g *Guard) SyncAll(ctx context.Context) {
+//
+// Returns true iff every configured friend synced without transient errors.
+func (g *Guard) SyncAll(ctx context.Context) bool {
 	g.syncMu.Lock()
 	defer g.syncMu.Unlock()
 
@@ -236,6 +256,7 @@ func (g *Guard) SyncAll(ctx context.Context) {
 	revoke := g.cfg.RevokeOnAuthErr
 	g.mu.RUnlock()
 
+	var transientFailed atomic.Bool
 	var wg sync.WaitGroup
 	for _, f := range friends {
 		wg.Add(1)
@@ -249,7 +270,9 @@ func (g *Guard) SyncAll(ctx context.Context) {
 				if errors.As(err, &ae) && revoke {
 					log.Printf("[GUARD] WARN friend %q credentials revoked, clearing its nodes per config: %v", f.Name, err)
 					g.byFriend[f.Name] = map[string]NodeMeta{}
+					delete(g.synced, f.Name)
 				} else {
+					transientFailed.Store(true)
 					log.Printf("[GUARD] friend %q sync failed (transient), keeping last snapshot: %v", f.Name, err)
 				}
 				return
@@ -263,19 +286,28 @@ func (g *Guard) SyncAll(ctx context.Context) {
 				}
 				m[d.NodeKey] = NodeMeta{Friend: f.Name, Device: d.Hostname, User: d.User}
 			}
+			changed := !g.synced[f.Name] || !nodesEqual(g.byFriend[f.Name], m)
 			g.byFriend[f.Name] = m
-			log.Printf("[GUARD] friend %q sync complete: %d devices, %d admitted", f.Name, len(devs), len(m))
+			g.synced[f.Name] = true
+			if changed {
+				log.Printf("[GUARD] friend %q sync complete: %d devices, %d admitted", f.Name, len(devs), len(m))
+			}
 		}(f)
 	}
 	wg.Wait()
 
-	g.rebuildAndPersist()
+	g.mu.Lock()
+	g.lastSync = time.Now()
+	g.mu.Unlock()
+
+	g.rebuildAndPersist(false)
+	return !transientFailed.Load() && ctx.Err() == nil
 }
 
 // rebuildAndPersist merges friend snapshots with the static allowlist into the
 // global read-only table, expires stale negative-cache entries, and atomically
-// writes the disk snapshot.
-func (g *Guard) rebuildAndPersist() {
+// writes the disk snapshot when the admitted table changed (or force is true).
+func (g *Guard) rebuildAndPersist(force bool) {
 	g.mu.Lock()
 	merged := make(map[string]NodeMeta)
 	for _, fm := range g.byFriend {
@@ -292,16 +324,30 @@ func (g *Guard) rebuildAndPersist() {
 	for k, exp := range g.negCache {
 		if !now.Before(exp) {
 			delete(g.negCache, k)
+		} else if _, ok := merged[k]; ok {
+			delete(g.negCache, k)
 		}
 	}
+	changed := force || !g.tableInitialized || !nodesEqual(g.nodes, merged)
 	g.nodes = merged
+	g.tableInitialized = true
 	cacheFile := g.cfg.CacheFile
-	byFriend := g.byFriend
+	var cacheData []byte
+	var marshalErr error
+	if changed && cacheFile != "" {
+		// Marshal under g.mu so concurrent writers cannot mutate byFriend mid-iteration.
+		cacheData, marshalErr = json.MarshalIndent(&nodeCacheFile{SavedAt: now.UTC(), ByFriend: g.byFriend}, "", "  ")
+	}
 	g.mu.Unlock()
 
+	if !changed {
+		return
+	}
 	log.Printf("[GUARD] admission table updated: %d nodes total", len(merged))
 	if cacheFile != "" {
-		if err := persistNodeCache(cacheFile, byFriend); err != nil {
+		if marshalErr != nil {
+			log.Printf("[GUARD] WARN failed to marshal node cache snapshot: %v", marshalErr)
+		} else if err := writeCacheBytes(cacheFile, cacheData); err != nil {
 			log.Printf("[GUARD] WARN failed to write node cache snapshot: %v", err)
 		}
 	}
@@ -310,9 +356,10 @@ func (g *Guard) rebuildAndPersist() {
 // Verify is the three-tier admission check:
 //  1. hit in the allow table -> admit;
 //  2. hit in the negative cache (not expired) -> instant deny, no API calls;
-//  3. cache miss: if the miss cooldown has elapsed, force one sync (5s cap) and
-//     re-check; still missing -> add to negative cache (TTL = poll_interval_sec)
-//     and deny. Within the cooldown window, deny without writing the neg cache.
+//  3. cache miss: if the miss cooldown has elapsed, force one sync (4.5s cap) and
+//     re-check; still missing after a clean sync -> add to negative cache
+//     (TTL = poll_interval_sec) and deny. Transient sync errors deny without
+//     writing the negative cache.
 func (g *Guard) Verify(nodeKey, sourceIP string) bool {
 	g.mu.RLock()
 	meta, allowed := g.nodes[nodeKey]
@@ -340,14 +387,18 @@ func (g *Guard) Verify(nodeKey, sourceIP string) bool {
 	g.lastForceSync = time.Now()
 	g.mu.Unlock()
 
-	g.forceSync()
+	syncOK := g.forceSync()
 
 	g.mu.RLock()
-	_, allowed = g.nodes[nodeKey]
+	meta, allowed = g.nodes[nodeKey]
 	g.mu.RUnlock()
 	if allowed {
-		log.Printf("[ADMIT] ALLOW (after force sync) ip=%s key=%s", sourceIP, nodeKey)
+		log.Printf("[ADMIT] ALLOW (after force sync) friend=%s device=%s user=%s ip=%s key=%s", meta.Friend, meta.Device, meta.User, sourceIP, nodeKey)
 		return true
+	}
+	if !syncOK {
+		log.Printf("[ADMIT] DENY (sync incomplete, skipping neg-cache) ip=%s key=%s", sourceIP, nodeKey)
+		return false
 	}
 	g.mu.Lock()
 	g.negCache[nodeKey] = time.Now().Add(time.Duration(g.currentPollIntervalLocked()) * time.Second)
@@ -358,42 +409,66 @@ func (g *Guard) Verify(nodeKey, sourceIP string) bool {
 
 // currentPollIntervalLocked requires g.mu to be held (read or write).
 func (g *Guard) currentPollIntervalLocked() int {
+	if g.cfg.PollIntervalSec <= 0 {
+		return 600
+	}
 	return g.cfg.PollIntervalSec
 }
 
-// forceSync runs one SyncAll synchronously with a 4.5s cap (derper's own
-// /admit timeout is 5s; we leave headroom). On timeout it just returns: the
-// in-flight requests hit the 5s context deadline, friends that didn't finish
-// keep their last snapshot (fail-closed), and the next poll or cooldown retry
-// completes the refresh.
-func (g *Guard) forceSync() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	done := make(chan struct{})
+// forceSync runs one SyncAll synchronously with a 4.5s wait cap (derper's own
+// /admit timeout is 5s; we leave headroom). If the API takes slightly longer
+// than 4.5s, the goroutine still finishes up to perFriendTimeout (8s) to warm
+// the table for the next retry, while returning false so Verify skips negCache.
+func (g *Guard) forceSync() bool {
+	done := make(chan bool, 1)
 	go func() {
-		g.SyncAll(ctx)
-		close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), perFriendTimeout)
+		defer cancel()
+		done <- g.SyncAll(ctx)
 	}()
 	select {
-	case <-done:
+	case ok := <-done:
+		return ok
 	case <-time.After(4500 * time.Millisecond):
+		return false
 	}
 }
 
-// pollLoop runs the periodic sync loop (interval is hot-reloadable via SIGHUP).
+// pollLoop runs the periodic sync loop (interval is hot-reloadable via SIGHUP)
+// and defers the next scheduled poll whenever an on-demand SyncAll already ran.
 func (g *Guard) pollLoop(ctx context.Context) {
 	for {
-		interval := time.Duration(g.currentPollInterval()) * time.Second
-		if interval <= 0 {
-			interval = 300 * time.Second
+		g.mu.RLock()
+		interval := time.Duration(g.currentPollIntervalLocked()) * time.Second
+		lastSync := g.lastSync
+		g.mu.RUnlock()
+
+		wait := interval
+		if !lastSync.IsZero() {
+			if rem := interval - time.Since(lastSync); rem < wait {
+				wait = rem
+			}
 		}
-		t := time.NewTimer(interval)
+		if wait < time.Second {
+			wait = time.Second
+		}
+
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return
 		case <-t.C:
 		}
+
+		g.mu.RLock()
+		interval = time.Duration(g.currentPollIntervalLocked()) * time.Second
+		recent := !g.lastSync.IsZero() && time.Since(g.lastSync) < interval-500*time.Millisecond
+		g.mu.RUnlock()
+		if recent {
+			continue
+		}
+
 		g.SyncAll(ctx)
 	}
 }
@@ -431,12 +506,8 @@ type nodeCacheFile struct {
 	ByFriend map[string]map[string]NodeMeta `json:"by_friend"`
 }
 
-// persistNodeCache writes to path+".tmp" first, then os.Rename — atomic.
-func persistNodeCache(path string, byFriend map[string]map[string]NodeMeta) error {
-	data, err := json.MarshalIndent(&nodeCacheFile{SavedAt: time.Now().UTC(), ByFriend: byFriend}, "", "  ")
-	if err != nil {
-		return err
-	}
+// writeCacheBytes writes pre-marshaled JSON to path+".tmp" first, then os.Rename — atomic.
+func writeCacheBytes(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -448,7 +519,8 @@ func persistNodeCache(path string, byFriend map[string]map[string]NodeMeta) erro
 }
 
 // LoadCache loads the disk snapshot at startup so a Tailscale API outage right
-// after a restart cannot leave us with an empty table.
+// after a restart cannot leave us with an empty table. Friends no longer
+// present in the current config are pruned immediately.
 func (g *Guard) LoadCache(path string) {
 	if path == "" {
 		return
@@ -466,13 +538,30 @@ func (g *Guard) LoadCache(path string) {
 	if c.ByFriend == nil {
 		c.ByFriend = map[string]map[string]NodeMeta{}
 	}
+
 	g.mu.Lock()
-	g.byFriend = c.ByFriend
-	g.mu.Unlock()
+	keep := make(map[string]bool, len(g.cfg.Friends))
+	for _, f := range g.cfg.Friends {
+		keep[f.Name] = true
+	}
+	filtered := make(map[string]map[string]NodeMeta, len(c.ByFriend))
+	pruned := 0
 	total := 0
-	for _, m := range c.ByFriend {
+	for name, m := range c.ByFriend {
+		if !keep[name] {
+			pruned++
+			continue
+		}
+		filtered[name] = m
 		total += len(m)
 	}
+	g.byFriend = filtered
+	g.mu.Unlock()
+
 	log.Printf("[GUARD] loaded node cache snapshot: %d friends / %d nodes (saved at %s)",
-		len(c.ByFriend), total, c.SavedAt.Local().Format(time.RFC3339))
+		len(filtered), total, c.SavedAt.Local().Format(time.RFC3339))
+	if pruned > 0 {
+		log.Printf("[GUARD] pruned %d removed friend(s) from cached snapshot", pruned)
+	}
+	g.rebuildAndPersist(pruned > 0)
 }

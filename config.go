@@ -127,7 +127,7 @@ func loadConfig(path string) (*Config, error) {
 
 	g := &cfg.Guard
 	if g.PollIntervalSec <= 0 {
-		g.PollIntervalSec = 300
+		g.PollIntervalSec = 600
 	}
 	if g.MissCooldownSec <= 0 {
 		g.MissCooldownSec = 60

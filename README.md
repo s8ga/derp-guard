@@ -38,7 +38,7 @@ sudo apt update && sudo apt install derp-guard
 
 Unsigned on purpose: everything is served over authenticated HTTPS from GitHub Pages by the same account that builds the packages, so signatures add no real protection here. Alternatively grab the deb directly from [Releases](https://github.com/s8ga/derp-guard/releases).
 
-What gets installed: `/usr/bin/derp-guard` (this repo), `/usr/libexec/derper` (official binary), `/etc/derp-guard/config.toml` (noreplace, survives upgrades, 0600), and `derp-guard.service`.
+What gets installed: `/usr/bin/derp-guard` (this repo), `/usr/libexec/derper` (official binary), `/etc/derp-guard/config.toml` (noreplace, survives upgrades, `root:derp-guard` 0640), and `derp-guard.service` (runs as unprivileged system user `derp-guard`).
 
 ## Friend side
 

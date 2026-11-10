@@ -16,6 +16,9 @@ description: |
 homepage: https://github.com/s8ga/derp-guard
 license: MIT
 
+scripts:
+  postinstall: ./packaging/postinstall.sh
+
 contents:
   - src: ./build/derp-guard
     dst: /usr/bin/derp-guard
@@ -31,7 +34,7 @@ contents:
     dst: /etc/derp-guard/config.toml
     type: config|noreplace
     file_info:
-      mode: 0600
+      mode: 0640
 
   - src: ./packaging/derp-guard.service
     dst: /lib/systemd/system/derp-guard.service

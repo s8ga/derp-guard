@@ -14,8 +14,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -52,6 +54,16 @@ func (a *app) derperArgs(admitPort int) []string {
 	d := &a.cfg.Derper
 	args := []string{
 		"--a=" + d.ListenAddr,
+	}
+	hasConfigFlag := false
+	for _, f := range d.ExtraFlags {
+		if f == "-c" || f == "--c" || strings.HasPrefix(f, "-c=") || strings.HasPrefix(f, "--c=") {
+			hasConfigFlag = true
+			break
+		}
+	}
+	if !hasConfigFlag {
+		args = append(args, "--c="+filepath.Join(filepath.Dir(filepath.Clean(d.CertDir)), "derper.key"))
 	}
 	switch d.STUNMode {
 	case "embedded", "disabled":

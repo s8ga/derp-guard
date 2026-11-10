@@ -43,11 +43,22 @@ pkg = apt.packages(
 )
 
 # ---- 3. render config ----
+files.directory(
+    name="Ensure /etc/derp-guard",
+    path="/etc/derp-guard",
+    user="root",
+    group="derp-guard",
+    mode="0750",
+    _sudo=True,
+)
+
 cfg = files.template(
     name="Render /etc/derp-guard/config.toml",
     src="deploy/pyinfra/templates/config.toml.j2",
     dest="/etc/derp-guard/config.toml",
-    mode="0600",
+    user="root",
+    group="derp-guard",
+    mode="0640",
     derp=host.data.derp,
     guard=host.data.guard,
     _sudo=True,
@@ -61,6 +72,7 @@ systemd.service(
     service="derp-guard",
     running=True,
     enabled=True,
+    daemon_reload=pkg.changed,
     restarted=pkg.changed,
     reloaded=(not pkg.changed and cfg.changed),
     _sudo=True,
