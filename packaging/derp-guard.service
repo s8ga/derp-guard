@@ -1,16 +1,16 @@
 [Unit]
-Description=Tailscale DERP Server with OAuth Admission Guard
+Description=Tailscale DERP Server with OAuth Admission Guard (derp-guard)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/derp-guard serve -config /etc/derper/config.toml
+ExecStart=/usr/bin/derp-guard serve -config /etc/derp-guard/config.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
-StateDirectory=derper
-ConfigurationDirectory=derper
+StateDirectory=derp-guard
+ConfigurationDirectory=derp-guard
 LimitNOFILE=65536
 
 [Install]

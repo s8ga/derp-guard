@@ -1,7 +1,7 @@
 // derp-guard — a cross-tailnet OAuth admission controller that also supervises
 // an unmodified upstream derper as a child process.
 //
-// It reads a single config file (default /etc/derper/config.toml):
+// It reads a single config file (default /etc/derp-guard/config.toml):
 //  1. Loads the on-disk node cache snapshot first (so a Tailscale API outage
 //     right after a restart cannot deadlock us with an empty table);
 //  2. Concurrently fetches every friend's tailnet device list using read-only
@@ -14,8 +14,8 @@
 //
 // Subcommands:
 //
-//	derp-guard [serve]  -config /etc/derper/config.toml   run the daemon
-//	derp-guard derpmap  -config /etc/derper/config.toml   print an ACL derpMap JSON snippet
+//	derp-guard [serve]  -config /etc/derp-guard/config.toml   run the daemon
+//	derp-guard derpmap  -config /etc/derp-guard/config.toml   print an ACL derpMap JSON snippet
 //
 // File layout:
 //
@@ -48,7 +48,7 @@ func main() {
 		log.Fatalf("[MAIN] unknown subcommand %q (available: serve, derpmap)", sub)
 	}
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
-	configPath := fs.String("config", "/etc/derper/config.toml", "path to config file")
+	configPath := fs.String("config", "/etc/derp-guard/config.toml", "path to config file")
 	_ = fs.Parse(args)
 
 	var err error

@@ -1,7 +1,7 @@
 # Deploy/update tailscale-derper-oauth on derp_servers:
 #   1. configure the APT repo (optional signed-by; trusted=yes when unsigned)
 #   2. install/upgrade the package
-#   3. render /etc/derper/config.toml (0600)
+#   3. render /etc/derp-guard/config.toml (0600)
 #   4. systemd coupling: package update -> restart; config-only change ->
 #      reload (SIGHUP, lossless hot reload)
 from pyinfra import host
@@ -36,17 +36,17 @@ files.line(
 
 # ---- 2. install/upgrade ----
 pkg = apt.packages(
-    name="Install/upgrade tailscale-derper-oauth",
-    packages=["tailscale-derper-oauth"],
+    name="Install/upgrade derp-guard",
+    packages=["derp-guard"],
     update=True,
     _sudo=True,
 )
 
 # ---- 3. render config ----
 cfg = files.template(
-    name="Render /etc/derper/config.toml",
+    name="Render /etc/derp-guard/config.toml",
     src="deploy/pyinfra/templates/config.toml.j2",
-    dest="/etc/derper/config.toml",
+    dest="/etc/derp-guard/config.toml",
     mode="0600",
     derp=host.data.derp,
     guard=host.data.guard,
@@ -57,8 +57,8 @@ cfg = files.template(
 # A package update (new binaries) always requires a restart; a config-only
 # change uses reload to trigger the SIGHUP lossless hot reload.
 systemd.service(
-    name="Enable and keep derper.service running",
-    service="derper",
+    name="Enable and keep derp-guard.service running",
+    service="derp-guard",
     running=True,
     enabled=True,
     restarted=pkg.changed,

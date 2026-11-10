@@ -1,7 +1,7 @@
-# nfpm packaging config: produces tailscale-derper-oauth_<DEB_VERSION>_<NFPM_ARCH>.deb
+# nfpm packaging config: produces derp-guard_<DEB_VERSION>_<NFPM_ARCH>.deb
 # Usage (env vars are injected by CI):
 #   NFPM_ARCH=amd64 DEB_VERSION=1.82.0-42 nfpm package -f packaging/nfpm.yaml -p deb -t dist/
-name: tailscale-derper-oauth
+name: derp-guard
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${DEB_VERSION}
@@ -28,12 +28,12 @@ contents:
       mode: 0755
 
   - src: ./packaging/config.example.toml
-    dst: /etc/derper/config.toml
+    dst: /etc/derp-guard/config.toml
     type: config|noreplace
     file_info:
       mode: 0600
 
-  - src: ./packaging/derper.service
-    dst: /lib/systemd/system/derper.service
+  - src: ./packaging/derp-guard.service
+    dst: /lib/systemd/system/derp-guard.service
     file_info:
       mode: 0644

@@ -1,4 +1,4 @@
-# Rendered to /etc/derper/config.toml (mode 0600) by deploy_derp.py.
+# Rendered to /etc/derp-guard/config.toml (mode 0600) by deploy_derp.py.
 # Variables come from the host's host.data.derp / host.data.guard in inventory.py.
 
 [derper]
@@ -8,7 +8,7 @@ listen_addr = "{{ derp.listen_addr }}"
 http_port   = {{ derp.http_port }}
 stun_port   = {{ derp.stun_port }}
 home        = "{{ derp.home }}"
-cert_dir    = "/var/lib/derper/certs"
+cert_dir    = "/var/lib/derp-guard/certs"
 ipv4        = "{{ derp.ipv4 }}"
 extra_flags = []
 
@@ -22,7 +22,7 @@ poll_interval_sec  = {{ guard.poll_interval_sec }}
 miss_cooldown_sec  = {{ guard.miss_cooldown_sec }}
 revoke_on_auth_err = {{ guard.revoke_on_auth_err | lower }}
 status_listen      = "{{ guard.status_listen }}"
-cache_file         = "/var/lib/derper/nodes_cache.json"
+cache_file         = "/var/lib/derp-guard/nodes_cache.json"
 
 {% if guard.static_nodes %}
 [guard.static_nodes]

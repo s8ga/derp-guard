@@ -92,7 +92,7 @@ func loadConfig(path string) (*Config, error) {
 		d.HTTPPort = -1
 	}
 	if d.CertDir == "" {
-		d.CertDir = "/var/lib/derper/certs"
+		d.CertDir = "/var/lib/derp-guard/certs"
 	}
 	if d.CertCheckIntervalSec <= 0 {
 		d.CertCheckIntervalSec = 60

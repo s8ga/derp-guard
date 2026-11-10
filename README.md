@@ -1,12 +1,12 @@
 # derp-guard
 
-The unmodified upstream [derper](https://github.com/tailscale/tailscale/tree/main/cmd/derper) plus a cross-tailnet admission controller, packaged as a single deb (`tailscale-derper-oauth`).
+The unmodified upstream [derper](https://github.com/tailscale/tailscale/tree/main/cmd/derper) plus a cross-tailnet admission controller, packaged as a single deb (`derp-guard`).
 
 The problem it solves: you and your friends each have your own Tailscale tailnet and don't want to merge them, but want to share one self-hosted DERP server. Each friend provides a read-only OAuth client (`devices:core:read`); derp-guard periodically pulls every tailnet's device list and only admits devices that are authorized and not shared in externally. derper itself is untouched — CI builds it from the upstream tag — and admission goes through its existing `--verify-client-url` hook, with `--verify-client-url-fail-open=false` passed explicitly: if the admission service is unreachable, connections are refused, not allowed.
 
 ## How it works
 
-One systemd unit (`derper.service`) starts `/usr/bin/derp-guard`, which reads a single config file (`/etc/derper/config.toml`):
+One systemd unit (`derp-guard.service`) starts `/usr/bin/derp-guard`, which reads a single config file (`/etc/derp-guard/config.toml`):
 
 1. Loads the on-disk node snapshot (`cache_file`) first, so a Tailscale API outage right after a restart can't start it with an empty table;
 2. Fetches every friend's device list concurrently (tokens cached and reused, 8s per-request timeout), keeps only `authorized && !isExternal` devices, merges the static allowlist into an admission table, and writes it back to disk atomically;
@@ -22,7 +22,7 @@ Errors are isolated per friend: revoked credentials (token 400/401, or device-li
 
 Operational behavior:
 
-- `systemctl reload derper` sends SIGHUP: friend/allowlist changes hot-reload the guard config without dropping connections; `[derper]` section or certificate changes gracefully restart the child process.
+- `systemctl reload derp-guard` sends SIGHUP: friend/allowlist changes hot-reload the guard config without dropping connections; `[derper]` section or certificate changes gracefully restart the child process.
 - If derper crashes it is restarted with exponential backoff (1s→2s→4s→8s→16s→30s); the counter resets after 60s of stable uptime.
 - In `custom_selfsigned` / `external_letsencrypt` modes the cert file hash is checked every `cert_check_interval_sec`; on change derper restarts only if validation passes (key pair matches, not expired, hostname matches). A half-written cert (external tool mid-renewal) just logs a warning.
 
@@ -33,12 +33,12 @@ Shared APT repo (hosted at [s8ga/repo](https://github.com/s8ga/repo); a schedule
 ```bash
 echo "deb [trusted=yes] https://s8ga.github.io/repo/deb/ ./" \
   | sudo tee /etc/apt/sources.list.d/s8ga.list
-sudo apt update && sudo apt install tailscale-derper-oauth
+sudo apt update && sudo apt install derp-guard
 ```
 
 Unsigned on purpose: everything is served over authenticated HTTPS from GitHub Pages by the same account that builds the packages, so signatures add no real protection here. Alternatively grab the deb directly from [Releases](https://github.com/s8ga/derp-guard/releases).
 
-What gets installed: `/usr/bin/derp-guard` (this repo), `/usr/libexec/derper` (official binary), `/etc/derper/config.toml` (noreplace, survives upgrades, 0600), and `derper.service`.
+What gets installed: `/usr/bin/derp-guard` (this repo), `/usr/libexec/derper` (official binary), `/etc/derp-guard/config.toml` (noreplace, survives upgrades, 0600), and `derp-guard.service`.
 
 ## Friend side
 
@@ -55,7 +55,7 @@ client_secret = "tskey-client-k222222CNTRL-yyyyyy"
 ```
 
 ```bash
-sudo systemctl reload derper
+sudo systemctl reload derp-guard
 ```
 
 Then each friend adds the derpMap (next section) to their own ACL.
@@ -109,7 +109,7 @@ key_file  = "/etc/letsencrypt/live/derp.example.com/privkey.pem"
 Friends paste the derpMap into their own ACL (<https://login.tailscale.com/admin/acls>, the `"derpMap"` field). The admin runs:
 
 ```bash
-derp-guard derpmap -config /etc/derper/config.toml
+derp-guard derpmap -config /etc/derp-guard/config.toml
 ```
 
 Self-signed modes get `CertName: "sha256-raw:..."` filled in automatically (the fingerprint also appears in the startup log and in `GET /status` as `cert_sha256_raw`); with `ipv4` configured it emits `"IPv4"` plus `"IPv6": "none"`.
@@ -118,7 +118,7 @@ Self-signed modes get `CertName: "sha256-raw:..."` filled in automatically (the 
 
 ```bash
 curl -s http://127.0.0.1:8001/status | jq   # node counts, friends, neg cache, derper PID, cert fingerprint
-journalctl -u derper -f | grep ADMIT        # live admission log
+journalctl -u derp-guard -f | grep ADMIT        # live admission log
 ```
 
 Emergency static allowlist (bypasses the API when everything is down):

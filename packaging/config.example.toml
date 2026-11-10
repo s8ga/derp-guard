@@ -1,5 +1,5 @@
 # derp-guard config file example
-# Deployed path: /etc/derper/config.toml (permissions should be 0600)
+# Deployed path: /etc/derp-guard/config.toml (permissions should be 0600)
 
 [derper]
 bin_path    = "/usr/libexec/derper"
@@ -8,7 +8,7 @@ listen_addr = ":443"
 http_port   = -1      # -1 disables port 80; set to 80 for derper_letsencrypt mode
 stun_port   = 3478
 home        = "blank" # passed to derper --home: "blank" hides the default DERP fingerprint page; can also be a redirect URL or "" (empty = flag not passed)
-cert_dir    = "/var/lib/derper/certs"
+cert_dir    = "/var/lib/derp-guard/certs"
 ipv4        = ""      # optional: explicit IPv4 emitted by the derp-guard derpmap subcommand
 extra_flags = []      # optional: extra command-line flags passed through to derper
 
@@ -28,7 +28,7 @@ poll_interval_sec  = 300
 miss_cooldown_sec  = 60
 revoke_on_auth_err = true
 status_listen      = "127.0.0.1:8001"
-cache_file         = "/var/lib/derper/nodes_cache.json"
+cache_file         = "/var/lib/derp-guard/nodes_cache.json"
 
 [guard.static_nodes]
 # Emergency static allowlist: "nodekey:64-hex-chars" = "device note"
