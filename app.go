@@ -43,6 +43,8 @@ type app struct {
 	mu              sync.Mutex
 	certFingerprint string // self-signed mode "sha256-raw:..." fingerprint
 	stagedHash      string // content hash of the currently staged external certificate
+
+	stunServer *stunServer
 }
 
 // derperArgs assembles the full derper child command line from current config.
@@ -50,7 +52,12 @@ func (a *app) derperArgs(admitPort int) []string {
 	d := &a.cfg.Derper
 	args := []string{
 		"--a=" + d.ListenAddr,
-		"--stun-port=" + strconv.Itoa(d.STUNPort),
+	}
+	switch d.STUNMode {
+	case "embedded", "disabled":
+		args = append(args, "--stun=false")
+	case "derper":
+		args = append(args, "--stun-port="+strconv.Itoa(d.STUNPort))
 	}
 	if d.Home != "" {
 		args = append(args, "--home="+d.Home)
@@ -103,15 +110,27 @@ func (a *app) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	fp := a.certFingerprint
+	stunSrv := a.stunServer
 	a.mu.Unlock()
 	var pid int
 	if a.sup != nil {
 		pid = a.sup.currentPID()
 	}
+	snap := a.guard.StatusSnapshot(fp, pid)
+	snap["stun_mode"] = a.cfg.Derper.STUNMode
+	if stunSrv != nil {
+		snap["stun_listen"] = stunSrv.Addr()
+		snap["stun_packets_rx"] = stunSrv.rxPackets.Load()
+		snap["stun_packets_tx"] = stunSrv.txPackets.Load()
+	} else if a.cfg.Derper.STUNMode == "derper" {
+		snap["stun_listen"] = fmt.Sprintf("derper:%d", a.cfg.Derper.STUNPort)
+	} else {
+		snap["stun_listen"] = "disabled"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(a.guard.StatusSnapshot(fp, pid))
+	_ = enc.Encode(snap)
 }
 
 // reloadConfig handles SIGHUP: on parse errors the current state is kept; the
@@ -127,6 +146,9 @@ func (a *app) reloadConfig() {
 	old := a.cfg
 
 	derperChanged := !reflect.DeepEqual(old.Derper, newCfg.Derper)
+	stunChanged := old.Derper.STUNMode != newCfg.Derper.STUNMode ||
+		old.Derper.STUNListen != newCfg.Derper.STUNListen ||
+		old.Derper.STUNPort != newCfg.Derper.STUNPort
 	certChanged := false
 	if m := newCfg.Derper.CertMode; m == "custom_selfsigned" || m == "external_letsencrypt" {
 		if h, err := certFileHash(newCfg.Derper.CertFile, newCfg.Derper.KeyFile); err == nil {
@@ -139,6 +161,16 @@ func (a *app) reloadConfig() {
 	// The [guard] section is always hot-updated, then synced once asynchronously.
 	a.guard.UpdateConfig(newCfg.Guard)
 	go a.guard.SyncAll(context.Background())
+
+	if stunChanged {
+		log.Printf("[RELOAD] STUN configuration changed (mode=%s), updating STUN server", newCfg.Derper.STUNMode)
+		a.stopSTUN()
+		if newCfg.Derper.STUNMode == "embedded" && newCfg.Derper.STUNListen != "" {
+			if err := a.startSTUN(newCfg.Derper.STUNListen); err != nil {
+				log.Printf("[STUN] WARN failed to restart STUN server on %s: %v", newCfg.Derper.STUNListen, err)
+			}
+		}
+	}
 
 	if !derperChanged && !certChanged {
 		a.cfg = newCfg
@@ -300,6 +332,13 @@ func cmdServe(configPath string) error {
 		go a.captureSelfSignedFingerprint()
 	}
 
+	// 5. Embedded STUN server (when stun_mode == "embedded")
+	if d.STUNMode == "embedded" && d.STUNListen != "" {
+		if err := a.startSTUN(d.STUNListen); err != nil {
+			log.Printf("[STUN] WARN failed to start embedded STUN server on %s: %v", d.STUNListen, err)
+		}
+	}
+
 	// Signals: SIGHUP tiered reload; SIGINT/SIGTERM graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
@@ -312,8 +351,31 @@ func cmdServe(configPath string) error {
 		case syscall.SIGINT, syscall.SIGTERM:
 			log.Printf("[MAIN] received %v, shutting down gracefully", sig)
 			cancel()
+			a.stopSTUN()
 			a.sup.shutdown()
 			return nil
 		}
+	}
+}
+
+func (a *app) startSTUN(addr string) error {
+	s, err := newSTUNServer(addr)
+	if err != nil {
+		return err
+	}
+	s.start()
+	a.mu.Lock()
+	a.stunServer = s
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *app) stopSTUN() {
+	a.mu.Lock()
+	s := a.stunServer
+	a.stunServer = nil
+	a.mu.Unlock()
+	if s != nil {
+		s.stop()
 	}
 }

@@ -64,11 +64,13 @@ Then each friend adds the derpMap (next section) to their own ACL.
 
 All fields are documented in [packaging/config.example.toml](packaging/config.example.toml). `cert_mode`, pick one of five:
 
-**reverse_proxy** — Caddy/Nginx in front terminates TLS. derper serves plain HTTP:
+**reverse_proxy** — Caddy/Nginx in front terminates TLS. derper serves plain HTTP locally, while derp-guard provides an embedded dual-stack STUN server on `:3478`:
 
 ```toml
 cert_mode   = "reverse_proxy"
 listen_addr = "127.0.0.1:3340"  # not 443: port 443 makes derper force TLS and startup fails
+stun_mode   = "embedded"        # "embedded" (default), "derper", or "disabled"
+stun_listen = ":3478"           # public UDP STUN server
 ```
 
 **derper_selfsigned** — no domain, public IP only; derper generates a self-signed cert on first start:

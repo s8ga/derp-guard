@@ -6,7 +6,9 @@ bin_path    = "/usr/libexec/derper"
 hostname    = "derp.example.com"
 listen_addr = ":443"
 http_port   = -1      # -1 disables port 80; set to 80 for derper_letsencrypt mode
-stun_port   = 3478
+stun_mode   = "embedded" # STUN mode: "embedded" (derp-guard dual-stack STUN), "derper" (delegate to upstream derper), "disabled"
+stun_port   = 3478       # STUN UDP port for derpMap and default STUN listen; set to -1 to disable STUN
+stun_listen = ":3478"    # optional: STUN UDP listen address (used when stun_mode = "embedded")
 home        = "blank" # passed to derper --home: "blank" hides the default DERP fingerprint page; can also be a redirect URL or "" (empty = flag not passed)
 cert_dir    = "/var/lib/derp-guard/certs"
 ipv4        = ""      # optional: explicit IPv4 emitted by the derp-guard derpmap subcommand

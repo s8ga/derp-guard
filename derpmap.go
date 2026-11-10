@@ -33,7 +33,9 @@ func cmdDerpMap(configPath string) error {
 		"Name":     "1",
 		"RegionID": derpMapRegionID,
 		"HostName": d.Hostname,
-		"STUNPort": d.STUNPort,
+	}
+	if d.STUNMode != "disabled" && d.STUNPort > 0 {
+		node["STUNPort"] = d.STUNPort
 	}
 	if d.IPv4 != "" {
 		// Explicit IPv4 with IPv6 disabled, so clients skip AAAA DNS lookups.

@@ -16,7 +16,9 @@ type DerperConfig struct {
 	Hostname   string   `toml:"hostname"`
 	ListenAddr string   `toml:"listen_addr"`
 	HTTPPort   int      `toml:"http_port"` // -1 disables port 80; set to 80 for derper_letsencrypt
-	STUNPort   int      `toml:"stun_port"`
+	STUNMode   string   `toml:"stun_mode"` // "embedded" (default), "derper", "disabled"
+	STUNPort   int      `toml:"stun_port"` // STUN port for derpMap; -1 disables STUN; defaults to 3478
+	STUNListen string   `toml:"stun_listen"` // optional: STUN UDP listen address for embedded mode (defaults to ":<stun_port>")
 	Home       string   `toml:"home"` // passed to derper --home: "blank" hides the fingerprint page; a URL redirects; empty means "do not pass"
 	CertDir    string   `toml:"cert_dir"`
 	IPv4       string   `toml:"ipv4"`       // optional: explicit IPv4 emitted by the derpmap subcommand
@@ -87,6 +89,18 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if d.STUNPort == 0 {
 		d.STUNPort = 3478
+	}
+	if d.STUNPort < 0 {
+		d.STUNMode = "disabled"
+	}
+	if d.STUNMode == "" {
+		d.STUNMode = "embedded"
+	}
+	if d.STUNMode != "embedded" && d.STUNMode != "derper" && d.STUNMode != "disabled" {
+		return nil, fmt.Errorf("[derper] invalid stun_mode %q: must be one of embedded / derper / disabled", d.STUNMode)
+	}
+	if d.STUNMode == "embedded" && d.STUNListen == "" {
+		d.STUNListen = fmt.Sprintf(":%d", d.STUNPort)
 	}
 	if d.HTTPPort == 0 {
 		d.HTTPPort = -1
